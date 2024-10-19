@@ -7,6 +7,7 @@ use std::path::Path;
 pub struct MenuItemDetailEntry {
     pub exec: String,
     pub wmclass: String,
+    pub is_terminal: bool,
 }
 
 pub enum MenuItemDetail {
@@ -57,7 +58,7 @@ impl MenuItem {
 
     fn other() -> Self {
 	MenuItem {
-	    name: String::from("Others"), icon: String::from("others"), categories: String::new(),
+	    name: String::from("Others"), icon: String::from("applications-other"), categories: String::new(),
 	    idx: 1, basename: String::from("__other_apps"), hidden: false, detail: MenuItemDetail::Directory,
 	}
     }
@@ -233,7 +234,7 @@ impl MenuIndex {
 		    eprintln!("Cannot parse {}", path.to_str().unwrap());
 		    continue;
 		};
-		
+
 		eprintln!("Parsing file {}", path.to_str().unwrap());
 		parser.parse(self);
 		self.reset();
@@ -252,7 +253,7 @@ impl DesktopParserCallback for MenuIndex {
 	if name.starts_with(b"Desktop Action") {
 	    self.in_action = true;
 	} else if name.starts_with(b"Desktop Entry") {
-	    self.current.detail = MenuItemDetail::Entry(MenuItemDetailEntry{ exec: String::new(), wmclass: String::new() })
+	    self.current.detail = MenuItemDetail::Entry(MenuItemDetailEntry{ exec: String::new(), wmclass: String::new(), is_terminal: false })
 	} else {
 	    self.reset();
 	}
@@ -284,7 +285,9 @@ impl DesktopParserCallback for MenuIndex {
 		detail.exec = decode(value);
 	    } else if self.current_key == "StartupWMClass" {
 		detail.wmclass = decode(value);
-	    }
+	    } else if self.current_key == "Terminal" {
+                detail.is_terminal = value.to_ascii_lowercase() == b"true";
+            }
 	}
     }
 }
