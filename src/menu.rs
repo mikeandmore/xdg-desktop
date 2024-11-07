@@ -328,7 +328,7 @@ impl MenuIndex {
 		    menu.children.push(item.idx);
 		    in_menu = true;
 		} else {
-		    eprintln!("Cannot find category {} in {}", key, item.basename);
+		    // eprintln!("Cannot find category {} in {}", key, item.basename);
 		}
 	    }
 	    if item.basename != "__other_apps" && !in_menu {
@@ -366,7 +366,7 @@ impl MenuIndex {
 		};
 		let path = ent.path();
 		if !path.is_file() || !path.extension().is_some_and(|e| e == ext) {
-		    eprintln!("ignoring path {} expecting ext {}", &path.display(), ext);
+		    // eprintln!("ignoring file {} expecting ext {}", &path.display(), ext);
 		    continue;
 		}
 		let Some(filename) = path.file_name().unwrap().to_str() else {
@@ -384,7 +384,7 @@ impl MenuIndex {
 		    continue;
 		};
 
-		eprintln!("Parsing file {}", path.to_str().unwrap());
+		// eprintln!("Parsing file {}", path.to_str().unwrap());
 		parser.parse(&mut self.desk_parser);
 		if self.desk_parser_reset() {
                     self.filename_index.insert(filename.to_string(), self.items.len() - 1);

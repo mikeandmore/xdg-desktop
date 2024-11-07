@@ -96,7 +96,7 @@ impl IconIndex {
 	    return;
 	}
 
-	eprintln!("Found icon {}", &icon_name);
+	// eprintln!("Found icon {}", &icon_name);
 
 	let icon = Icon {
 	    name: String::from(icon_name), path: file.to_path_buf().clone(), desc: icon_desc.clone(),
@@ -111,7 +111,7 @@ impl IconIndex {
 
     fn scan_all_dir(&mut self, root_dir: &Path) {
 	let Ok(dir) = root_dir.read_dir() else {
-	    eprintln!("Icon: Cannot read_dir: {}", root_dir.to_str().unwrap());
+	    // eprintln!("Icon: Cannot read_dir: {}", root_dir.to_str().unwrap());
 	    return;
 	};
 	for ent in dir {
