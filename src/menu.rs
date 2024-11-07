@@ -1,4 +1,5 @@
 use crate::desktop_parser::{DesktopFile, DesktopParserCallback};
+use core::str;
 use std::collections::HashMap;
 use std::fs::{File, read_dir};
 use std::mem::swap;
@@ -8,6 +9,7 @@ pub struct MenuItemDetailEntry {
     pub exec: String,
     pub wmclass: String,
     pub is_terminal: bool,
+    pub mimes: Vec<String>,
 }
 
 pub enum MenuItemDetail {
@@ -107,16 +109,128 @@ impl Menu {
     }
 }
 
-pub struct MenuIndex {
-    pub index: HashMap<String, Menu>,
-    pub items: Vec<MenuItem>,
-
+struct MenuIndexDesktopParser {
     name_str: String,
     filename: String,
 
     current: MenuItem,
     current_key: String,
     in_action: bool,
+}
+
+impl DesktopParserCallback for MenuIndexDesktopParser {
+    fn on_section(&mut self, name: &[u8]) -> bool {
+	if name.starts_with(b"Desktop Action") {
+	    self.in_action = true;
+	} else if name.starts_with(b"Desktop Entry") {
+	    self.current.detail = MenuItemDetail::Entry(MenuItemDetailEntry{ exec: String::new(), wmclass: String::new(), is_terminal: false, mimes: vec![] })
+	} else {
+            eprintln!("Unrecognized section {}", String::from_utf8_lossy(name));
+            return false;
+	}
+        return true;
+    }
+    fn on_key(&mut self, key: &[u8]) -> bool {
+	if !self.in_action {
+	    self.current_key = decode(key);
+        }
+
+        true
+    }
+    fn on_value(&mut self, value: &[u8]) -> bool {
+	if self.in_action {
+	    return true;
+	}
+
+	if self.current_key == "Type" && value == b"Directory" {
+	    self.current.detail = MenuItemDetail::Directory;
+	} else if self.current_key == self.name_str {
+	    self.current.name = decode(value);
+	} else if self.current_key == "Icon" {
+	    self.current.icon = decode(value);
+	} else if self.current_key == "Categories" {
+	    self.current.categories = decode(value);
+	} else if self.current_key == "NoDisplay" {
+	    self.current.hidden = value.to_ascii_lowercase() == b"true";
+	} else if let MenuItemDetail::Entry(detail) = &mut self.current.detail {
+	    if self.current_key == "Exec" {
+		detail.exec = decode(value);
+	    } else if self.current_key == "StartupWMClass" {
+		detail.wmclass = decode(value);
+	    } else if self.current_key == "Terminal" {
+                detail.is_terminal = value.to_ascii_lowercase() == b"true";
+            } else if self.current_key == "MimeType" {
+                detail.mimes = String::from_utf8_lossy(value).split(';').map(|s| s.to_string()).collect();
+            }
+	}
+
+        true
+    }
+}
+
+#[derive(PartialEq, Clone, Copy)]
+enum AssocType {
+    Default, Add, Remove,
+}
+
+struct Assoc {
+    filename: String,
+    mime: String,
+    assoc_type: AssocType,
+}
+
+struct MenuIndexAssocParser {
+    cur_mime: String,
+    cur_assoc: AssocType,
+
+    assocs: Vec<Assoc>,
+}
+
+impl DesktopParserCallback for MenuIndexAssocParser {
+    fn on_section(&mut self, name: &[u8]) -> bool {
+        if name.starts_with(b"Default Applications") {
+            self.cur_assoc = AssocType::Default;
+        } else if name.starts_with(b"Add Associations") {
+            self.cur_assoc = AssocType::Add;
+        } else if name.starts_with(b"Removed Associations") {
+            self.cur_assoc = AssocType::Remove;
+        } else {
+            eprintln!("Unrecognized section {}", String::from_utf8_lossy(name));
+            return false;
+        }
+
+        true
+    }
+
+    fn on_key(&mut self, key: &[u8]) -> bool {
+        self.cur_mime = String::from_utf8_lossy(key).to_string();
+        true
+    }
+
+    fn on_value(&mut self, value: &[u8]) -> bool {
+        for s in value.to_vec().split(|ch| *ch == b';') {
+            if s.len() == 0 {
+                continue;
+            }
+            let Ok(filename) = str::from_utf8(s) else {
+                continue;
+            };
+            self.assocs.push(Assoc { filename: filename.to_string(), mime: self.cur_mime.clone(), assoc_type: self.cur_assoc });
+        }
+
+        true
+    }
+}
+
+pub struct MenuIndex {
+    pub index: HashMap<String, Menu>,
+    pub mime_assoc_index: HashMap<String, Vec<usize>>,
+    pub items: Vec<MenuItem>,
+
+    filename_index: HashMap<String, usize>,
+
+    desk_parser: MenuIndexDesktopParser,
+    assoc_parser: MenuIndexAssocParser,
 }
 
 fn decode(bytes: &[u8]) -> String { return String::from_utf8_lossy(bytes).into_owned(); }
@@ -134,24 +248,36 @@ impl MenuIndex {
 	    name_str += "]";
 	}
 	let other_item = MenuItem::other();
-	return MenuIndex {
-	    index: HashMap::from([(String::new(), Menu::new(0))]),
-	    items: vec![MenuItem::root()],
-	    name_str,
+        let desk_parser = MenuIndexDesktopParser {
+            name_str,
 	    filename: other_item.basename.clone(),
 	    current: other_item,
 	    current_key: String::new(),
 	    in_action: false,
+        };
+        let assoc_parser = MenuIndexAssocParser {
+            cur_mime: String::new(),
+            cur_assoc: AssocType::Default,
+            assocs: vec![],
+        };
+	return MenuIndex {
+	    index: HashMap::from([(String::new(), Menu::new(0))]),
+            mime_assoc_index: HashMap::new(),
+	    items: vec![MenuItem::root()],
+            filename_index: HashMap::new(),
+	    desk_parser,
+            assoc_parser,
 	}
     }
-    fn reset(&mut self) {
+    fn desk_parser_reset(&mut self) -> bool {
 	let mut current = MenuItem::new();
-	swap(&mut current, &mut self.current);
+	swap(&mut current, &mut self.desk_parser.current);
+	self.desk_parser.in_action = false;
 	if !current.name.is_empty() {
-	    current.basename = self.filename.clone();
+	    current.basename = self.desk_parser.filename.clone();
 	    current.idx = self.items.len();
 	    if let MenuItemDetail::Directory = current.detail {
-		self.index.insert(self.filename.clone(), Menu::new(current.idx));
+		self.index.insert(self.desk_parser.filename.clone(), Menu::new(current.idx));
 	    } else if let MenuItemDetail::Entry(detail) = &mut current.detail {
 		if detail.wmclass.is_empty() {
 		    // Guess the wmclass
@@ -159,12 +285,21 @@ impl MenuIndex {
 		}
 	    }
 	    self.items.push(current);
+
+            return true;
 	}
-	self.in_action = false;
+        return false;
+    }
+    fn assoc_parser_reset(&mut self) -> Vec<Assoc> {
+        self.assoc_parser.cur_mime = String::new();
+        let mut result: Vec<Assoc> = vec![];
+        swap(&mut result, &mut self.assoc_parser.assocs);
+
+        result
     }
 
     pub fn scan_all(&mut self, paths: &Vec<&str>) {
-	self.reset();
+	self.desk_parser_reset();
 
 	for path_str in paths {
 	    let p = Path::new(path_str);
@@ -201,6 +336,20 @@ impl MenuIndex {
 		self.index.get_mut("__other_apps").unwrap().children.push(item.idx);
 	    }
 	}
+
+        // Build MIME associations.
+        for i in 0..self.items.len() {
+            let MenuItemDetail::Entry(ent) = &self.items[i].detail else {
+                continue;
+            };
+            for mime in ent.mimes.iter() {
+                if let Some(v) = self.mime_assoc_index.get_mut(mime.as_str()) {
+                    v.push(i);
+                } else {
+                    self.mime_assoc_index.insert(mime.clone(), vec![i]);
+                }
+            }
+        }
     }
 
     fn scan_prefix_path(&mut self, p: &Path) {
@@ -225,7 +374,7 @@ impl MenuIndex {
 		    continue;
 		};
 
-		self.filename = filename[..filename.len() - path.extension().unwrap().len() - 1].to_string();
+		self.desk_parser.filename = filename[..filename.len() - path.extension().unwrap().len() - 1].to_string();
 		let Ok(file) = File::open(path.clone()) else {
 		    eprintln!("Cannot open {}", path.to_str().unwrap());
 		    continue;
@@ -236,9 +385,42 @@ impl MenuIndex {
 		};
 
 		eprintln!("Parsing file {}", path.to_str().unwrap());
-		parser.parse(self);
-		self.reset();
+		parser.parse(&mut self.desk_parser);
+		if self.desk_parser_reset() {
+                    self.filename_index.insert(filename.to_string(), self.items.len() - 1);
+                }
 	    }
+            if ext == "directory" {
+                continue;
+            }
+
+
+            let Ok(mime_assoc_file) = File::open(p.join("mimeapps.list")) else {
+                continue;
+            };
+            let Ok(assoc_parser) = DesktopFile::new(mime_assoc_file) else {
+                continue;
+            };
+            assoc_parser.parse(&mut self.assoc_parser);
+            let assocs = self.assoc_parser_reset();
+            for assoc in assocs {
+                let Some(idx) = self.filename_index.get(&assoc.filename) else {
+                    continue;
+                };
+                let MenuItemDetail::Entry(ent) = &mut self.items[*idx].detail else {
+                    continue;
+                };
+
+                if assoc.assoc_type == AssocType::Add {
+                    ent.mimes.push(assoc.mime);
+                } else if assoc.assoc_type == AssocType::Remove {
+                    if let Some(to_remove) = ent.mimes.iter().position(|m| *m == assoc.mime) {
+                        ent.mimes.remove(to_remove);
+                    }
+                } else if assoc.assoc_type == AssocType::Default {
+                    self.mime_assoc_index.insert(assoc.mime.clone(), vec![*idx]);
+                }
+            }
 	}
     }
 
@@ -246,48 +428,4 @@ impl MenuIndex {
 	self.index.get("").unwrap().print(self, printer);
     }
 
-}
-
-impl DesktopParserCallback for MenuIndex {
-    fn on_section(&mut self, name: &[u8]) {
-	if name.starts_with(b"Desktop Action") {
-	    self.in_action = true;
-	} else if name.starts_with(b"Desktop Entry") {
-	    self.current.detail = MenuItemDetail::Entry(MenuItemDetailEntry{ exec: String::new(), wmclass: String::new(), is_terminal: false })
-	} else {
-	    self.reset();
-	}
-    }
-    fn on_key(&mut self, key: &[u8]) {
-	if self.in_action {
-	    return;
-	}
-	self.current_key = decode(key);
-    }
-    fn on_value(&mut self, value: &[u8]) {
-	if self.in_action {
-	    return;
-	}
-
-	if self.current_key == "Type" && value == b"Directory" {
-	    self.current.detail = MenuItemDetail::Directory;
-	    return;
-	} else if self.current_key == self.name_str {
-	    self.current.name = decode(value);
-	} else if self.current_key == "Icon" {
-	    self.current.icon = decode(value);
-	} else if self.current_key == "Categories" {
-	    self.current.categories = decode(value);
-	} else if self.current_key == "NoDisplay" {
-	    self.current.hidden = value.to_ascii_lowercase() == b"true";
-	} else if let MenuItemDetail::Entry(detail) = &mut self.current.detail {
-	    if self.current_key == "Exec" {
-		detail.exec = decode(value);
-	    } else if self.current_key == "StartupWMClass" {
-		detail.wmclass = decode(value);
-	    } else if self.current_key == "Terminal" {
-                detail.is_terminal = value.to_ascii_lowercase() == b"true";
-            }
-	}
-    }
 }

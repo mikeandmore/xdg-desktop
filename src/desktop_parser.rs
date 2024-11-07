@@ -8,9 +8,9 @@ pub struct DesktopFile {
 }
 
 pub trait DesktopParserCallback {
-    fn on_section(&mut self, name: &[u8]);
-    fn on_key(&mut self, key: &[u8]);
-    fn on_value(&mut self, value: &[u8]);
+    fn on_section(&mut self, name: &[u8]) -> bool;
+    fn on_key(&mut self, key: &[u8]) -> bool;
+    fn on_value(&mut self, value: &[u8]) -> bool;
 }
 
 fn skip_whitespace<'a>(slice: &'a[u8]) -> &'a [u8] {
@@ -41,7 +41,7 @@ impl DesktopFile {
 	    file, mmap_region,
 	});
     }
-    pub fn parse(&self, callback: &mut impl DesktopParserCallback) {
+    pub fn parse(&self, callback: &mut impl DesktopParserCallback) -> bool {
 	let mut slice = self.mmap_region.iter().as_slice();
 	while slice.len() > 0 {
 	    slice = skip_whitespace(slice);
@@ -52,20 +52,26 @@ impl DesktopFile {
 	    } else if slice[0] == b'[' {
 		slice = &slice[1..];
 		let (next_slice, pos) = find_next_char(b']', slice).unwrap();
-		callback.on_section(&slice[..pos]);
+		if !callback.on_section(&slice[..pos]) {
+                    return false
+                }
 		slice = &next_slice[1..]
 	    } else {
 		let (next_slice, pos) = find_next_char(b'=', slice).unwrap();
-		callback.on_key(&slice[..pos]);
+		if !callback.on_key(&slice[..pos]) {
+                    return false;
+                }
 		slice = &next_slice[1..];
 		let Some((next_slice, pos)) = find_next_char(b'\n', slice) else {
-		    callback.on_value(&slice);
-		    return;
+		    return callback.on_value(&slice);
 		};
-		callback.on_value(&slice[..pos]);
+		if !callback.on_value(&slice[..pos]) {
+                    return false;
+                }
 		slice = &next_slice[1..];
 	    }
 	}
+
+        true
     }
 }
-

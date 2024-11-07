@@ -44,7 +44,7 @@ fn parse_desc(s: &str) -> Option<IconDescription> {
 	return Some(IconDescription::Scalable);
     }
     let re = Regex::new(r"(?<size>[0-9]+)x[0-9]+(?:@(?<scale>[0-9]+))?").unwrap();
-    
+
     let Some(m) = re.captures(s) else {
 	return None;
     };
@@ -101,7 +101,7 @@ impl IconIndex {
 	let icon = Icon {
 	    name: String::from(icon_name), path: file.to_path_buf().clone(), desc: icon_desc.clone(),
 	};
-	
+
 	if let Some(icons) = self.index.get_mut(icon_name) {
 	    icons.push(icon);
 	} else {
