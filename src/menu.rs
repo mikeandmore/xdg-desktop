@@ -64,6 +64,14 @@ impl MenuItem {
 	    idx: 1, basename: String::from("__other_apps"), hidden: false, detail: MenuItemDetail::Directory,
 	}
     }
+
+    pub fn detail_entry(&self) -> Option<&MenuItemDetailEntry> {
+        if let MenuItemDetail::Entry(ent) = &item.detail {
+            Some(ent)
+        } else {
+            None
+        }
+    }
 }
 
 pub struct Menu {
@@ -222,9 +230,14 @@ impl DesktopParserCallback for MenuIndexAssocParser {
     }
 }
 
+pub struct MenuAssociation {
+    pub default: Option<usize>,
+    pub all: Vec<usize>,
+}
+
 pub struct MenuIndex {
     pub index: HashMap<String, Menu>,
-    pub mime_assoc_index: HashMap<String, Vec<usize>>,
+    pub mime_assoc_index: HashMap<String, MenuAssociation>,
     pub items: Vec<MenuItem>,
 
     filename_index: HashMap<String, usize>,
@@ -269,6 +282,7 @@ impl MenuIndex {
             assoc_parser,
 	}
     }
+
     fn desk_parser_reset(&mut self) -> bool {
 	let mut current = MenuItem::new();
 	swap(&mut current, &mut self.desk_parser.current);
@@ -343,10 +357,10 @@ impl MenuIndex {
                 continue;
             };
             for mime in ent.mimes.iter() {
-                if let Some(v) = self.mime_assoc_index.get_mut(mime.as_str()) {
-                    v.push(i);
+                if let Some(assoc) = self.mime_assoc_index.get_mut(mime.as_str()) {
+                    assoc.all.push(i);
                 } else {
-                    self.mime_assoc_index.insert(mime.clone(), vec![i]);
+                    self.mime_assoc_index.insert(mime.clone(), MenuAssociation { default: None, all: vec![i] });
                 }
             }
         }
@@ -394,7 +408,6 @@ impl MenuIndex {
                 continue;
             }
 
-
             let Ok(mime_assoc_file) = File::open(p.join("mimeapps.list")) else {
                 continue;
             };
@@ -418,7 +431,7 @@ impl MenuIndex {
                         ent.mimes.remove(to_remove);
                     }
                 } else if assoc.assoc_type == AssocType::Default {
-                    self.mime_assoc_index.insert(assoc.mime.clone(), vec![*idx]);
+                    self.mime_assoc_index.insert(assoc.mime.clone(), MenuAssociation { default: Some(*idx), all: vec![] });
                 }
             }
 	}
