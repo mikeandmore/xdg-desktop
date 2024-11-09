@@ -352,7 +352,7 @@ impl MenuIndex {
 		}
 	    }
 	    if item.basename != "__other_apps" && !in_menu {
-		eprintln!("adding {} Others...", item.basename);
+		// eprintln!("adding {} Others...", item.basename);
 		self.index.get_mut("__other_apps").unwrap().children.push(item.idx);
 	    }
 	}
