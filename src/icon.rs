@@ -129,12 +129,14 @@ impl IconIndex {
 	}
     }
 
-    pub fn scan_with_theme(&mut self, themes: Vec<&str>, paths: &Vec<&str>) {
+    pub fn scan_with_theme<'a, PathIterator>(&mut self, themes: Vec<&str>, paths: PathIterator)
+    where PathIterator: Iterator<Item = &'a Path> {
+        let pathbufs: Vec<PathBuf> = paths.map(|p| PathBuf::from(p)).collect();
 	for th in themes {
-	    for path in paths {
-		let mut pbuf = PathBuf::from(path);
-		pbuf.push("icons");
-		pbuf.push(th);
+	    for pbuf in &pathbufs {
+		let mut pbuf = pbuf.clone();
+                pbuf.push("icons");
+                pbuf.push(th);
 		self.scan_all_dir(pbuf.as_path());
 	    }
 	}

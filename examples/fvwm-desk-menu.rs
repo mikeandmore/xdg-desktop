@@ -1,3 +1,4 @@
+use xdg_desktop::dirs::xdg_data_dirs;
 use xdg_desktop::icon::IconIndex;
 use xdg_desktop::menu::{MenuPrinter, MenuItem, MenuItemDetail, MenuIndex};
 use std::{env, path::Path, process::Command, fs};
@@ -13,7 +14,8 @@ struct FvwmMenuPrinter<'a> {
 }
 
 impl<'a> FvwmMenuPrinter<'a> {
-    fn new(icon_theme: String, paths: &Vec<&str>, desire_icon_size: usize, menu_index: &'a MenuIndex) -> Self {
+    fn new<'b, PathIterator>(icon_theme: String, paths: PathIterator, desire_icon_size: usize, menu_index: &'a MenuIndex) -> Self
+    where PathIterator: Iterator<Item = &'b Path> {
 	let pathname = format!("{}/.fvwm/icons/{}", env::var("HOME").unwrap(), desire_icon_size);
 	let local_icon_path = Path::new(&pathname);
 	if !local_icon_path.is_dir() {
@@ -143,15 +145,12 @@ impl<'a> MenuPrinter for FvwmMenuPrinter<'a> {
 }
 
 fn main() {
-    let path_dirs = env::args().nth(1).unwrap().to_string();
-    let icon_theme = env::args().nth(2).unwrap().to_string();
-
+    let icon_theme = env::args().nth(1).unwrap().to_string();
     let mut index = MenuIndex::new_default();
 
-    let paths = path_dirs.split(":").collect();
-
-    index.scan_all(&paths);
-    let mut printer = FvwmMenuPrinter::new(icon_theme, &paths, 64, &index);
+    index.scan();
+    let paths = xdg_data_dirs();
+    let mut printer = FvwmMenuPrinter::new(icon_theme, paths.iter().map(|s| Path::new(s)), 64, &index);
     printer.ensure_all_icons();
 
     index.print(&mut printer);

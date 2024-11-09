@@ -1,4 +1,5 @@
 use crate::desktop_parser::{DesktopFile, DesktopParserCallback};
+use crate::dirs;
 use core::str;
 use std::collections::HashMap;
 use std::fs::{File, read_dir};
@@ -66,7 +67,7 @@ impl MenuItem {
     }
 
     pub fn detail_entry(&self) -> Option<&MenuItemDetailEntry> {
-        if let MenuItemDetail::Entry(ent) = &item.detail {
+        if let MenuItemDetail::Entry(ent) = &self.detail {
             Some(ent)
         } else {
             None
@@ -312,11 +313,16 @@ impl MenuIndex {
         result
     }
 
-    pub fn scan_all(&mut self, paths: &Vec<&str>) {
+    pub fn scan(&mut self) {
+        let paths = dirs::xdg_data_dirs();
+        self.scan_all(paths.iter().map(|s| Path::new(s)));
+    }
+
+    pub fn scan_all<'a, PathIterator>(&mut self, paths: PathIterator)
+    where PathIterator: Iterator<Item = &'a Path> {
 	self.desk_parser_reset();
 
-	for path_str in paths {
-	    let p = Path::new(path_str);
+	for p in paths {
 	    if p.is_dir() {
 		self.scan_prefix_path(p);
 	    }
