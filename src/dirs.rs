@@ -20,7 +20,7 @@ pub fn xdg_data_dirs() -> Vec<String> {
         } else if ra > rb {
             return Ordering::Greater;
         } else {
-            return a.cmp(b);
+            return b.cmp(a);
         }
     });
 
