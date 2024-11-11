@@ -6,52 +6,45 @@ use glob::Pattern;
 use memmap::MmapOptions;
 
 struct MIMEGlobItem {
+    score: usize,
     mime: String,
-    pattern: Pattern,
+    pattern: Option<Pattern>,
 }
 
-fn parse_mime_glob<'a, Callback>(slice: &'a [u8], mut callback: Callback) where Callback: FnMut(&'a [u8], &'a [u8]) -> bool {
+fn parse_mime_glob<'a, Callback>(slice: &'a [u8], mut callback: Callback) where Callback: FnMut(&'a [u8], &'a [u8], &'a [u8]) -> bool {
     let mut line_start = 0;
-    loop {
-        if line_start == slice.len() {
+    while line_start < slice.len() {
+        let Some(line_size) = slice[line_start..].iter().position(|ch| *ch == b'\n') else {
             break;
-        }
-        if slice[line_start] == b'#' {
-            if let Some(line_end) = slice[line_start..].iter().position(|ch| *ch == b'\n') {
-                line_start += line_end + 1;
-                continue;
-            } else {
-                break;
-            }
-        }
-        if let Some(colon_pos) = slice[line_start..].iter().position(|ch| *ch == b':') {
-            if line_start + colon_pos + 1 == slice.len() {
-                break;
-            }
-            if let Some(line_end) = slice[line_start + colon_pos + 1..].iter().position(|ch| *ch == b'\n') {
-                let mime = &slice[line_start..line_start + colon_pos];
-                let ptn = &slice[line_start + colon_pos + 1..line_start + colon_pos + 1 + line_end];
-                if !callback(mime, ptn) {
-                    return;
-                }
+        };
 
-                line_start += colon_pos + line_end + 2;
-            } else {
+        if slice[line_start] != b'#' {
+            let line_args = slice[line_start..line_start + line_size].split(|ch| *ch == b':').into_iter().take(3).collect::<Vec<&'a [u8]>>();
+            if line_args.len() < 3 {
+                line_start += line_size + 1;
+                continue;
+            }
+            if !callback(line_args[0], line_args[1], line_args[2]) {
                 break;
             }
-        } else {
-            break;
         }
+
+        line_start += line_size + 1;
     }
 }
 
 pub fn mime_glob_foreach<ForCallback>(
     mut for_callback: ForCallback) -> Result<()>
-where ForCallback: FnMut(String, &str) -> bool {
-    let file = File::open("/usr/share/mime/globs")?;
+where ForCallback: FnMut(usize, String, &str) -> bool {
+    let file = File::open("/usr/share/mime/globs2")?;
     let region = unsafe { MmapOptions::new().map(&file)? };
-    parse_mime_glob(region.iter().as_slice(), |mime, ptn| {
-        for_callback(String::from_utf8(mime.to_vec()).unwrap(),
+    parse_mime_glob(region.iter().as_slice(), |score, mime, ptn| {
+        let Ok(Ok(score)) = str::from_utf8(score).map(|s| s.parse::<usize>()) else {
+            return true; // Skip.
+        };
+
+        for_callback(score,
+                     String::from_utf8(mime.to_vec()).unwrap(),
                      str::from_utf8(ptn).unwrap())
     });
 
@@ -60,21 +53,24 @@ where ForCallback: FnMut(String, &str) -> bool {
 
 pub struct MIMEGlobIndex {
     glob_patterns: Vec<MIMEGlobItem>,
-    glob_suffix_index: HashMap<String, String>,
+    glob_suffix_index: HashMap<String, MIMEGlobItem>,
 }
 
 impl MIMEGlobIndex {
     pub fn new() -> Result<Self> {
         let mut glob_patterns: Vec<MIMEGlobItem> = vec![];
-        let mut glob_suffix_index: HashMap<String, String> = HashMap::new();
+        let mut glob_suffix_index: HashMap<String, MIMEGlobItem> = HashMap::new();
 
-        mime_glob_foreach(|mime, ptn| {
-            if ptn.chars().nth(0) == Some('*') && ptn[1..].chars().all(|ch| ch != '*') {
-                glob_suffix_index.insert(ptn[1..].to_string(), mime);
+        mime_glob_foreach(|score, mime, ptn| {
+            if ptn.chars().nth(0) == Some('*') && ptn[1..].chars().all(|ch| ch != '*' && ch != '?') {
+                glob_suffix_index.insert(ptn[1..].to_string(), MIMEGlobItem {
+                    score, mime, pattern: None,
+                });
             } else {
                 glob_patterns.push(MIMEGlobItem {
+                    score,
                     mime,
-                    pattern: Pattern::new(ptn).unwrap(),
+                    pattern: Some(Pattern::new(ptn).unwrap()),
                 });
             }
 
@@ -86,21 +82,21 @@ impl MIMEGlobIndex {
         })
     }
 
-    fn match_filename_suffix(&self, filename: &str) -> Option<&str> {
+    fn match_filename_suffix(&self, filename: &str) -> Option<&MIMEGlobItem> {
         if let Some(extpos) = filename.rfind('.') {
-            let extosstr = &filename[extpos..];
-            if let Some(mime) = self.glob_suffix_index.get(extosstr) {
-                return Some(mime);
-            }
+            return self.glob_suffix_index.get(&filename[extpos..]);
         }
 
         None
     }
 
-    fn match_filename_regex(&self, filename: &str) -> Option<&str> {
+    fn match_filename_pattern(&self, filename: &str, min_score: usize) -> Option<&MIMEGlobItem> {
         for glob_item in &self.glob_patterns {
-            if glob_item.pattern.matches(filename) {
-                return Some(glob_item.mime.as_str());
+            if glob_item.score < min_score {
+                return None;
+            }
+            if glob_item.pattern.as_ref().unwrap().matches(filename) {
+                return Some(glob_item);
             }
         }
 
@@ -108,7 +104,16 @@ impl MIMEGlobIndex {
     }
 
     pub fn match_filename(&self, filename: &str) -> Option<&str> {
-        self.match_filename_suffix(filename).or_else(|| self.match_filename_regex(filename))
+        let suffix_match = self.match_filename_suffix(filename);
+        let suffix_score = suffix_match.map(|item| item.score).unwrap_or(0);
+
+        let pattern_match = self.match_filename_pattern(filename, suffix_score);
+        let pattern_score = pattern_match.map(|item| item.score).unwrap_or(0);
+        if suffix_score > pattern_score {
+            suffix_match.map(|item| item.mime.as_str())
+        } else {
+            pattern_match.map(|item| item.mime.as_str())
+        }
     }
 
 }
