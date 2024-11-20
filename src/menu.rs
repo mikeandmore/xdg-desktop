@@ -1,9 +1,11 @@
+use regex::Regex;
 use crate::desktop_parser::{DesktopFile, DesktopParserCallback};
 use crate::dirs;
 use core::str;
 use std::collections::HashMap;
 use std::fs::{File, read_dir};
 use std::mem::swap;
+use std::path::{Path, PathBuf};
 use std::path::Path;
 
 pub struct MenuItemDetailEntry {
@@ -32,6 +34,39 @@ impl MenuItemDetailEntry {
 	}
 
 	return String::from(args[0].split("/").last().unwrap());
+    }
+    pub fn exec_with_filenames(&self, paths: &Vec<&PathBuf>) -> Vec<String> {
+        let escape_path = |m: &str, p: &&PathBuf| -> String {
+            let s = p.to_str().unwrap().replace('\'', "\\\'");
+            if m == "%U" || m == "%u" {
+                format!("\"file://{}\"", s)
+            } else {
+                format!("\"{}\"", s)
+            }
+        };
+        let marker_regex = Regex::new("%[uUfF%]").unwrap();
+        let mut result: Vec<String> = Vec::new();
+        let mut next_path_id = 0;
+
+        while next_path_id < paths.len() {
+            let mut sstart: usize = 0;
+            let mut fragments: Vec<String> = vec![];
+            for m in marker_regex.find_iter(&self.exec) {
+                fragments.push(self.exec[sstart..m.start()].to_string());
+                sstart = m.end();
+
+                if m.as_str() == "%U" || m.as_str() == "%F" {
+                    fragments.push(paths.iter().map(|p| escape_path(m.as_str(), p)).fold(String::new(), |a, b| a + " " + b.as_str()));
+                    next_path_id = paths.len();
+                } else if m.as_str() == "%u" || m.as_str() == "%f" {
+                    fragments.push(escape_path(m.as_str(), &paths[next_path_id]));
+                    next_path_id += 1;
+                }
+            }
+            result.push(fragments.join(""));
+        }
+
+        result
     }
 }
 
