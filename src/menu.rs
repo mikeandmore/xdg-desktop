@@ -1,12 +1,16 @@
 use regex::Regex;
+
 use crate::desktop_parser::{DesktopFile, DesktopParserCallback};
 use crate::dirs;
-use core::str;
+use core::{fmt, str};
 use std::collections::HashMap;
-use std::fs::{File, read_dir};
+use std::env;
+use std::ffi::OsString;
+use std::fs::{read_dir, File, OpenOptions};
+use std::io::Write;
 use std::mem::swap;
 use std::path::{Path, PathBuf};
-use std::path::Path;
+use std::str::FromStr;
 
 pub struct MenuItemDetailEntry {
     pub exec: String,
@@ -213,14 +217,25 @@ impl DesktopParserCallback for MenuIndexDesktopParser {
 }
 
 #[derive(PartialEq, Clone, Copy)]
-enum AssocType {
+pub enum AssocType {
     Default, Add, Remove,
 }
 
-struct Assoc {
-    filename: String,
-    mime: String,
-    assoc_type: AssocType,
+#[derive(Clone)]
+pub struct Assoc {
+    pub filename: String,
+    pub mime: String,
+    pub assoc_type: AssocType,
+}
+
+impl fmt::Display for AssocType {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        match self {
+            AssocType::Add => write!(f, "Add Associations"),
+            AssocType::Remove => write!(f, "Removed Associations"),
+            AssocType::Default => write!(f, "Default Applications"),
+        }
+    }
 }
 
 struct MenuIndexAssocParser {
@@ -275,6 +290,7 @@ pub struct MenuIndex {
     pub index: HashMap<String, Menu>,
     pub mime_assoc_index: HashMap<String, MenuAssociation>,
     pub items: Vec<MenuItem>,
+    pub local_assocs: Vec<Assoc>,
 
     filename_index: HashMap<String, usize>,
 
@@ -313,6 +329,7 @@ impl MenuIndex {
 	    index: HashMap::from([(String::new(), Menu::new(0))]),
             mime_assoc_index: HashMap::new(),
 	    items: vec![MenuItem::root()],
+            local_assocs: Vec::new(),
             filename_index: HashMap::new(),
 	    desk_parser,
             assoc_parser,
@@ -398,9 +415,7 @@ impl MenuIndex {
                 continue;
             };
             for mime in ent.mimes.iter() {
-                if let Some(assoc) = self.mime_assoc_index.get_mut(mime.as_str()) {
-                    assoc.all.push(i);
-                } else {
+                if self.mime_assoc_index.get_mut(mime.as_str()).map(|assoc| { assoc.all.push(i); }).is_none() {
                     self.mime_assoc_index.insert(mime.clone(), MenuAssociation { default: None, all: vec![i] });
                 }
             }
@@ -457,6 +472,10 @@ impl MenuIndex {
             };
             assoc_parser.parse(&mut self.assoc_parser);
             let assocs = self.assoc_parser_reset();
+            let local_dir = env::var("HOME").unwrap_or("/root".to_string()) + "/.local/share/applications";
+            if p == OsString::from_str(local_dir.as_str()).unwrap() {
+                self.local_assocs = assocs.clone();
+            }
             for assoc in assocs {
                 let Some(idx) = self.filename_index.get(&assoc.filename) else {
                     continue;
@@ -482,4 +501,37 @@ impl MenuIndex {
 	self.index.get("").unwrap().print(self, printer);
     }
 
+    pub fn change_default_assoc(&mut self, mime: &str, idx: usize) {
+        let filename = self.items[idx].basename.clone() + ".desktop";
+        let mut old_default: Option<usize> = None;
+        if self.mime_assoc_index.get_mut(mime).map(|assoc| { old_default = std::mem::replace(&mut assoc.default, Some(idx)); }).is_none() {
+            self.mime_assoc_index.insert(mime.to_string(), MenuAssociation { default: Some(idx), all: Vec::new() });
+        }
+
+        if old_default.is_none() {
+            self.local_assocs.push(Assoc { filename, mime: mime.to_string(), assoc_type: AssocType::Default });
+            return;
+        }
+
+        for assoc in self.local_assocs.iter_mut() {
+            if assoc.assoc_type == AssocType::Default && assoc.filename == filename && assoc.mime.as_str() == mime {
+                assoc.filename = filename;
+                break;
+            }
+        }
+    }
+
+    pub fn write_default_assoc(&self) -> std::io::Result<()> {
+        let mut file = OpenOptions::new().write(true).truncate(true).create(true).open(env::var("HOME").unwrap_or("/root".to_string()) + "/.local/share/applications/mimeapps.list")?;
+        let mut cur_sec: Option<AssocType> = None;
+        for assoc in &self.local_assocs {
+            if cur_sec != Some(assoc.assoc_type) {
+                file.write_fmt(format_args!("[{}]\n", assoc.assoc_type))?;
+                cur_sec = Some(assoc.assoc_type);
+            }
+            file.write_fmt(format_args!("{}={}\n", &assoc.mime, &assoc.filename))?;
+        }
+
+        Ok(())
+    }
 }
