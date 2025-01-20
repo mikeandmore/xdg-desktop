@@ -1,4 +1,5 @@
 use core::str;
+use std::path::Path;
 use std::{collections::HashMap, fs::File};
 use std::io::Result;
 
@@ -33,10 +34,10 @@ fn parse_mime_glob<'a, Callback>(slice: &'a [u8], mut callback: Callback) where 
     }
 }
 
-pub fn mime_glob_foreach<ForCallback>(
-    mut for_callback: ForCallback) -> Result<()>
-where ForCallback: FnMut(usize, String, &str) -> bool {
-    let file = File::open("/usr/share/mime/globs2")?;
+pub fn mime_glob_foreach<P, ForCallback>(path: P, mut for_callback: ForCallback) -> Result<()>
+where P: AsRef<Path>,
+      ForCallback: FnMut(usize, String, &str) -> bool {
+    let file = File::open(path)?;
     let region = unsafe { MmapOptions::new().map(&file)? };
     parse_mime_glob(region.iter().as_slice(), |score, mime, ptn| {
         let Ok(Ok(score)) = str::from_utf8(score).map(|s| s.parse::<usize>()) else {
@@ -58,10 +59,15 @@ pub struct MIMEGlobIndex {
 
 impl MIMEGlobIndex {
     pub fn new() -> Result<Self> {
+        Self::new_with_path("/usr/share/mime/globs2")
+    }
+
+    pub fn new_with_path<P>(path: P) -> Result<Self>
+    where P: AsRef<Path> {
         let mut glob_patterns: Vec<MIMEGlobItem> = vec![];
         let mut glob_suffix_index: HashMap<String, MIMEGlobItem> = HashMap::new();
 
-        mime_glob_foreach(|score, mime, ptn| {
+        mime_glob_foreach(path, |score, mime, ptn| {
             if ptn.chars().nth(0) == Some('*') && ptn[1..].chars().all(|ch| ch != '*' && ch != '?') {
                 glob_suffix_index.insert(ptn[1..].to_string(), MIMEGlobItem {
                     score, mime, pattern: None,

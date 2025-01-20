@@ -46,7 +46,7 @@ fn main() {
     let mut mimes: Vec<String> = Vec::with_capacity(paths.len());
     let mut nr_matches = 0;
     mimes.extend(iter::repeat(String::new()).take(paths.len()));
-    mime_glob_foreach(|_, m, pattern| {
+    mime_glob_foreach("/usr/share/mime/globs2", |_, m, pattern| {
         let ptn = Pattern::new(pattern).unwrap();
 
         for i in 0..paths.len() {
