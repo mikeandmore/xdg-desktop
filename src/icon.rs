@@ -1,4 +1,4 @@
-use std::{collections::HashMap, path::{Path, PathBuf}, ffi::OsString};
+use std::{collections::{BTreeMap, HashMap}, ffi::OsString, fs, path::{Path, PathBuf}};
 use regex::Regex;
 
 #[derive(Clone)]
@@ -13,31 +13,26 @@ pub enum IconDescription {
     Bitmap(BitmapIconDescription),
 }
 
-pub struct Icon {
-    pub name: String,
-    pub path: PathBuf,
-    pub desc: IconDescription,
+struct IconDir {
+    path: PathBuf,
+    desc: IconDescription,
 }
 
-pub struct IconIndex {
-    pub index: HashMap<String, Vec<Icon>>,
+struct IconTheme {
+    scalable_dirs: Vec<IconDir>,
+    bitmap_dirs: BTreeMap<usize, Vec<IconDir>>,
 }
 
-impl Icon {
-    pub fn pixel_size(&self) -> Option<usize> {
-	match &self.desc {
-	    IconDescription::Scalable => None,
-	    IconDescription::Bitmap(desc) => Some(desc.size * desc.scale),
-	}
-    }
+pub struct IconCollection {
+    themes: Vec<IconTheme>,
 }
 
-fn filename_is_image(filename: &OsString) -> bool {
-    if let Some(s) = filename.to_str() {
-	return s.ends_with(".png") || s.ends_with(".svg");
-    }
-    return false;
-}
+// fn filename_is_image(filename: &OsString) -> bool {
+//     if let Some(s) = filename.to_str() {
+// 	return s.ends_with(".png") || s.ends_with(".svg");
+//     }
+//     return false;
+// }
 
 fn parse_desc(s: &str) -> Option<IconDescription> {
     if s == "scalable" {
@@ -58,7 +53,28 @@ fn parse_desc(s: &str) -> Option<IconDescription> {
     }));
 }
 
-impl IconIndex {
+impl IconTheme {
+    pub fn new(dirs: fs::ReadDir) -> Self {
+        let mut this = Self {
+            scalable_dirs: Vec::new(),
+            bitmap_dirs: BTreeMap::new(),
+        };
+	for ent in dirs {
+	    let Ok(ent) = ent else {
+		continue;
+	    };
+	    if let Ok(file_type) = ent.file_type() {
+		if !file_type.is_dir() && !file_type.is_symlink() {
+		    continue;
+		}
+		if let Some(icon_desc) = parse_desc(ent.file_name().to_str().unwrap()) {
+		    this.scan_dir(&ent.path(), &icon_desc);
+		}
+	    };
+	}
+        this
+    }
+
     fn scan_dir(&mut self, dir: &Path, icon_desc: &IconDescription) {
 	let Ok(d) = dir.read_dir() else {
 	    return;
@@ -72,61 +88,58 @@ impl IconIndex {
 		eprintln!("Icon: Cannot open {}", path.to_str().unwrap());
 		continue;
 	    };
-	    if md.is_file() && filename_is_image(&ent.file_name()) {
-		self.add_image(&path, icon_desc);
-	    } else if md.is_dir() {
-		self.scan_dir(&path, icon_desc);
+            if md.is_dir() || md.is_symlink() {
+                let dir = IconDir {
+                    path: path.to_path_buf(),
+                    desc: icon_desc.clone(),
+                };
+                match &icon_desc {
+                    IconDescription::Scalable => { self.scalable_dirs.push(dir); }
+                    IconDescription::Bitmap(desc) => {
+                        let key = desc.size * desc.scale;
+                        if let Some(dirs) = self.bitmap_dirs.get_mut(&key) {
+                            dirs.push(dir);
+                        } else {
+                            self.bitmap_dirs.insert(key, vec![dir]);
+                        }
+                    }
+                }
 	    }
 	}
     }
+    pub fn find_icon(&self, name: &str, real_size: usize) -> Option<(usize, PathBuf)> {
+        for it in &self.scalable_dirs {
+            let mut p = it.path.clone();
+            p.push(name.to_owned() + ".svg");
+            // println!("Trying {}", p.display());
+            if p.is_file() || p.is_symlink() {
+                return Some((usize::max_value(), p));
+            }
+        }
+        for it in self.bitmap_dirs.range(real_size..) {
+            for suffix in [".svg", ".png"] {
+                for desc in it.1 {
+                    let mut p = desc.path.clone();
+                    p.push(name.to_owned() + suffix);
+                    // println!("Trying {}", p.display());
+                    if p.is_file() || p.is_symlink() {
+                        return Some((*it.0, p));
+                    }
+                }
+            }
+        }
 
-    fn add_image(&mut self, file: &Path, icon_desc: &IconDescription) -> () {
-	let (Some(filename), Some(ext)) = (file.file_name(), file.extension()) else {
-	    return;
-	};
-	let Some(filename_str) = filename.to_str() else {
-	    return;
-	};
-
-	let icon_name = &filename_str[..filename_str.len() - ext.len() - 1];
-
-	let symbolic_suffix = "-symbolic.symbolic";
-	if icon_name.ends_with(symbolic_suffix) {
-	    // Ignore them. They are ugly
-	    return;
-	}
-
-	// eprintln!("Found icon {}", &icon_name);
-
-	let icon = Icon {
-	    name: String::from(icon_name), path: file.to_path_buf().clone(), desc: icon_desc.clone(),
-	};
-
-	if let Some(icons) = self.index.get_mut(icon_name) {
-	    icons.push(icon);
-	} else {
-	    self.index.insert(String::from(icon_name), vec![icon]);
-	}
+        None
     }
+}
 
+impl IconCollection {
     fn scan_all_dir(&mut self, root_dir: &Path) {
-	let Ok(dir) = root_dir.read_dir() else {
+	let Ok(dirs) = root_dir.read_dir() else {
 	    // eprintln!("Icon: Cannot read_dir: {}", root_dir.to_str().unwrap());
 	    return;
 	};
-	for ent in dir {
-	    let Ok(ent) = ent else {
-		continue;
-	    };
-	    if let Ok(file_type) = ent.file_type() {
-		if !file_type.is_dir() {
-		    continue;
-		}
-		if let Some(icon_desc) = parse_desc(ent.file_name().to_str().unwrap()) {
-		    self.scan_dir(&ent.path(), &icon_desc);
-		}
-	    };
-	}
+        self.themes.push(IconTheme::new(dirs))
     }
 
     pub fn scan_with_theme<'a, PathIterator>(&mut self, themes: Vec<&str>, paths: PathIterator)
@@ -142,9 +155,20 @@ impl IconIndex {
 	}
     }
 
+    pub fn find_icon(&self, name: &str, real_size: usize) -> Option<(usize, PathBuf)> {
+        for theme in &self.themes {
+            let query = theme.find_icon(name, real_size);
+            if query.is_some() {
+                return query;
+            }
+        }
+
+        None
+    }
+
     pub fn new() -> Self {
-	IconIndex {
-	    index: HashMap::new(),
-	}
+	IconCollection {
+            themes: Vec::new(),
+        }
     }
 }

@@ -1,12 +1,12 @@
 use xdg_desktop::dirs::xdg_data_dirs;
-use xdg_desktop::icon::IconIndex;
+use xdg_desktop::icon::IconCollection;
 use xdg_desktop::menu::{MenuPrinter, MenuItem, MenuItemDetail, MenuIndex};
 use std::{env, path::Path, process::Command, fs};
 use std::io;
 
 struct FvwmMenuPrinter<'a> {
     level: usize,
-    icon_index: IconIndex,
+    icon_col: IconCollection,
     desire_icon_size: usize,
     menu_index: &'a MenuIndex,
 
@@ -22,11 +22,11 @@ impl<'a> FvwmMenuPrinter<'a> {
 	    let _ = fs::create_dir(local_icon_path);
 	}
 
-	let mut icon_index = IconIndex::new();
-	icon_index.scan_with_theme(vec![&icon_theme, "hicolor"], paths);
+	let mut icon_col = IconCollection::new();
+	icon_col.scan_with_theme(vec![&icon_theme, "hicolor"], paths);
 
 	Self {
-	    level: 0, icon_index, desire_icon_size, menu_index, menu_stack: vec!(),
+	    level: 0, icon_col, desire_icon_size, menu_index, menu_stack: vec!(),
 	}
     }
 
@@ -39,29 +39,20 @@ impl<'a> FvwmMenuPrinter<'a> {
     }
 
     fn ensure_icon(&self, name: &str) -> Result<(), io::Error> {
-	let Some(icons) = self.icon_index.index.get(name) else {
+	let Some((icon_size, icon_path)) = self.icon_col.find_icon(name, self.desire_icon_size) else {
 	    return Ok(());
 	};
-	let mut lsize = 0;
-	let mut idx = -1;
-	for (i, icon) in icons.iter().enumerate() {
-	    let Some(pixel_size) = icon.pixel_size() else {
-		return Ok(());
-	    };
-	    if pixel_size == self.desire_icon_size {
-		return Ok(());
-	    }
-	    if lsize < pixel_size {
-		lsize = pixel_size;
-		idx = i as i32;
-	    }
+	if icon_size == self.desire_icon_size {
+	    return Ok(());
 	}
+        if icon_path.extension().unwrap() == "svg" {
+            return Ok(());
+        }
 
 	// Call imagemagick convert to scale the image.
-	let icon = &icons[idx as usize];
-	let output_filename = format!("{}/.fvwm/icons/{}/{}.png", env::var("HOME").unwrap(), self.desire_icon_size, &icon.name);
+	let output_filename = format!("{}/.fvwm/icons/{}/{}.png", env::var("HOME").unwrap(), self.desire_icon_size, name);
 
-	let src_mod = fs::metadata(&icon.path)?.modified()?;
+	let src_mod = fs::metadata(&icon_path)?.modified()?;
 	if let Ok(dst_md) = fs::metadata(&output_filename) {
 	    if let Ok(dst_mod) = dst_md.modified() {
 		if dst_mod > src_mod {
@@ -72,7 +63,7 @@ impl<'a> FvwmMenuPrinter<'a> {
 
 	let result = Command::new("convert")
 	    .arg("-resize").arg(format!("{}x{}", self.desire_icon_size, self.desire_icon_size))
-	    .arg(icon.path.to_str().unwrap())
+	    .arg(icon_path.to_str().unwrap())
 	    .arg(&output_filename)
 	    .spawn();
 	if !result?.wait()?.success() {
@@ -83,17 +74,18 @@ impl<'a> FvwmMenuPrinter<'a> {
     }
 
     fn resolve_icon(&self, name: &str) -> Option<String> {
-	let Some(icons) = self.icon_index.index.get(name) else {
+	let Some((icon_size, icon_path)) = self.icon_col.find_icon(name, self.desire_icon_size) else {
 	    return None;
 	};
-	for icon in icons {
-	    let Some(pixel_size) = icon.pixel_size() else {
-		return Some(format!("{}:{}x{}", icon.path.to_str().unwrap(), self.desire_icon_size, self.desire_icon_size));
-	    };
-	    if pixel_size == self.desire_icon_size {
-		return Some(String::from(icon.path.to_str().unwrap()));
-	    }
+
+	if icon_path.extension().unwrap() == "svg" {
+	    return Some(format!("{}:{}x{}", icon_path.to_str().unwrap(), self.desire_icon_size, self.desire_icon_size));
 	}
+
+	if icon_size == self.desire_icon_size {
+	    return Some(String::from(icon_path.to_str().unwrap()));
+	}
+
 	return Some(format!("{}/.fvwm/icons/{}/{}.png", env::var("HOME").unwrap(), self.desire_icon_size, &name));
     }
 
