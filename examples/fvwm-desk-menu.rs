@@ -1,6 +1,7 @@
 use xdg_desktop::dirs::xdg_data_dirs;
 use xdg_desktop::icon::IconCollection;
 use xdg_desktop::menu::{MenuPrinter, MenuItem, MenuItemDetail, MenuIndex};
+use std::path::PathBuf;
 use std::{env, path::Path, process::Command, fs};
 use std::io;
 
@@ -39,18 +40,29 @@ impl<'a> FvwmMenuPrinter<'a> {
     }
 
     fn ensure_icon(&self, name: &str) -> Result<(), io::Error> {
-	let Some((icon_size, icon_path)) = self.icon_col.find_icon(name, self.desire_icon_size) else {
-	    return Ok(());
-	};
-	if icon_size == self.desire_icon_size {
-	    return Ok(());
-	}
-        if icon_path.extension().unwrap() == "svg" {
-            return Ok(());
+        let icon_path: PathBuf;
+        let icon_name: String;
+
+        if name.starts_with('/') {
+            // Always convert because we don't really trust this file.
+            icon_path = PathBuf::from(name);
+            icon_name = String::from(icon_path.file_stem().unwrap().to_str().unwrap());
+        } else {
+	    let Some((icon_desc, match_icon_path)) = self.icon_col.find_icon(name, self.desire_icon_size) else {
+	        return Ok(());
+	    };
+	    if icon_desc.icon_size() == self.desire_icon_size {
+	        return Ok(());
+	    }
+            if match_icon_path.extension().unwrap() == "svg" {
+                return Ok(());
+            }
+            icon_path = match_icon_path;
+            icon_name = String::from(name);
         }
 
 	// Call imagemagick convert to scale the image.
-	let output_filename = format!("{}/.fvwm/icons/{}/{}.png", env::var("HOME").unwrap(), self.desire_icon_size, name);
+	let output_filename = format!("{}/.fvwm/icons/{}/{}.png", env::var("HOME").unwrap(), self.desire_icon_size, icon_name);
 
 	let src_mod = fs::metadata(&icon_path)?.modified()?;
 	if let Ok(dst_md) = fs::metadata(&output_filename) {
@@ -74,7 +86,13 @@ impl<'a> FvwmMenuPrinter<'a> {
     }
 
     fn resolve_icon(&self, name: &str) -> Option<String> {
-	let Some((icon_size, icon_path)) = self.icon_col.find_icon(name, self.desire_icon_size) else {
+        if name.starts_with('/') {
+            // They are always converted.
+            return Some(format!("{}/.fvwm/icons/{}/{}.png", env::var("HOME").unwrap(), self.desire_icon_size,
+                                PathBuf::from(name).file_stem().unwrap().to_str().unwrap()));
+        }
+
+	let Some((icon_desc, icon_path)) = self.icon_col.find_icon(name, self.desire_icon_size) else {
 	    return None;
 	};
 
@@ -82,7 +100,7 @@ impl<'a> FvwmMenuPrinter<'a> {
 	    return Some(format!("{}:{}x{}", icon_path.to_str().unwrap(), self.desire_icon_size, self.desire_icon_size));
 	}
 
-	if icon_size == self.desire_icon_size {
+	if icon_desc.icon_size() == self.desire_icon_size {
 	    return Some(String::from(icon_path.to_str().unwrap()));
 	}
 

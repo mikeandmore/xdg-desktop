@@ -1,4 +1,4 @@
-use std::{collections::{BTreeMap, HashMap}, ffi::OsString, fs, path::{Path, PathBuf}};
+use std::{collections::BTreeMap, fs, path::{Path, PathBuf}};
 use regex::Regex;
 
 #[derive(Clone)]
@@ -11,6 +11,15 @@ pub struct BitmapIconDescription {
 pub enum IconDescription {
     Scalable,
     Bitmap(BitmapIconDescription),
+}
+
+impl IconDescription {
+    pub fn icon_size(&self) -> usize {
+        match self {
+            IconDescription::Scalable => { usize::max_value() },
+            IconDescription::Bitmap(desc) => { desc.size * desc.scale },
+        }
+    }
 }
 
 struct IconDir {
@@ -26,13 +35,6 @@ struct IconTheme {
 pub struct IconCollection {
     themes: Vec<IconTheme>,
 }
-
-// fn filename_is_image(filename: &OsString) -> bool {
-//     if let Some(s) = filename.to_str() {
-// 	return s.ends_with(".png") || s.ends_with(".svg");
-//     }
-//     return false;
-// }
 
 fn parse_desc(s: &str) -> Option<IconDescription> {
     if s == "scalable" {
@@ -54,7 +56,7 @@ fn parse_desc(s: &str) -> Option<IconDescription> {
 }
 
 impl IconTheme {
-    pub fn new(dirs: fs::ReadDir) -> Self {
+    fn new(dirs: fs::ReadDir) -> Self {
         let mut this = Self {
             scalable_dirs: Vec::new(),
             bitmap_dirs: BTreeMap::new(),
@@ -107,13 +109,14 @@ impl IconTheme {
 	    }
 	}
     }
-    pub fn find_icon(&self, name: &str, real_size: usize) -> Option<(usize, PathBuf)> {
+
+    fn find_icon_pred<Pred>(&self, name: &str, real_size: usize, mut pred: Pred) -> Option<(&IconDescription, PathBuf)>
+    where Pred: FnMut(&IconDescription) -> bool + Copy {
         for it in &self.scalable_dirs {
             let mut p = it.path.clone();
             p.push(name.to_owned() + ".svg");
-            // println!("Trying {}", p.display());
-            if p.is_file() || p.is_symlink() {
-                return Some((usize::max_value(), p));
+            if (p.is_file() || p.is_symlink()) && pred(&it.desc) {
+                return Some((&it.desc, p));
             }
         }
         for it in self.bitmap_dirs.range(real_size..) {
@@ -122,8 +125,8 @@ impl IconTheme {
                     let mut p = desc.path.clone();
                     p.push(name.to_owned() + suffix);
                     // println!("Trying {}", p.display());
-                    if p.is_file() || p.is_symlink() {
-                        return Some((*it.0, p));
+                    if p.is_file() || p.is_symlink() && pred(&desc.desc) {
+                        return Some((&desc.desc, p));
                     }
                 }
             }
@@ -155,15 +158,20 @@ impl IconCollection {
 	}
     }
 
-    pub fn find_icon(&self, name: &str, real_size: usize) -> Option<(usize, PathBuf)> {
+    pub fn find_icon_pred<Pred>(&self, name: &str, real_size: usize, pred: Pred) -> Option<(&IconDescription, PathBuf)>
+    where Pred: FnMut(&IconDescription) -> bool + Copy {
         for theme in &self.themes {
-            let query = theme.find_icon(name, real_size);
+            let query = theme.find_icon_pred(name, real_size, pred);
             if query.is_some() {
                 return query;
             }
         }
 
         None
+    }
+
+    pub fn find_icon(&self, name: &str, real_size: usize) -> Option<(&IconDescription, PathBuf)> {
+        self.find_icon_pred(name, real_size, |_| true)
     }
 
     pub fn new() -> Self {
